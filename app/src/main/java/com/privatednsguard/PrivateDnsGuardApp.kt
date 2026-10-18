@@ -13,6 +13,11 @@ class PrivateDnsGuardApp : Application() {
         val repository = DnsGuardRepository.getInstance(this)
         repository.refreshState()
 
+        // Initialize Shizuku binder listeners
+        com.privatednsguard.shizuku.ShizukuManager.init {
+            repository.refreshState()
+        }
+
         // Schedule periodic health worker
         DnsHealthWorker.schedule(this)
 

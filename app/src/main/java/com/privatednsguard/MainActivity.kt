@@ -68,6 +68,7 @@ class MainActivity : FragmentActivity() {
     override fun onResume() {
         super.onResume()
         repository.refreshState()
+        com.privatednsguard.shizuku.ShizukuManager.checkAndUpdate()
     }
 
     private fun triggerBiometricPrompt(onSuccess: () -> Unit) {

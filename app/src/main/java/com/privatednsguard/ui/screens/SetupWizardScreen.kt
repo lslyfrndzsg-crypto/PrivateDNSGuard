@@ -17,6 +17,8 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import android.content.Intent
+import android.net.Uri
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
@@ -27,6 +29,8 @@ import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.ElectricalServices
 import androidx.compose.material.icons.filled.FlashOn
 import androidx.compose.material.icons.filled.Laptop
+import androidx.compose.material.icons.filled.OpenInNew
+import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
@@ -39,6 +43,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -75,6 +80,12 @@ fun SetupWizardScreen(
     val context = LocalContext.current
     val coroutineScope = rememberCoroutineScope()
     var isGrantingViaShizuku by remember { mutableStateOf(false) }
+
+    val isBinderReceived by ShizukuManager.isBinderReceived.collectAsState()
+    val hasShizukuPermission by ShizukuManager.hasPermission.collectAsState()
+
+    val isShizukuRunning = isBinderReceived || ShizukuManager.isShizukuRunning()
+    val isShizukuAuthorized = hasShizukuPermission || ShizukuManager.hasShizukuPermission()
 
     val adbCommand = "adb shell pm grant ${context.packageName} android.permission.WRITE_SECURE_SETTINGS"
 
@@ -152,28 +163,51 @@ fun SetupWizardScreen(
         Card(
             modifier = Modifier.fillMaxWidth(),
             colors = CardDefaults.cardColors(containerColor = DarkSurface),
-            border = BorderStroke(1.dp, DarkBorder),
+            border = BorderStroke(1.dp, if (state.hasSecureSettingsPermission) GuardGreen.copy(alpha = 0.5f) else DarkBorder),
             shape = RoundedCornerShape(20.dp)
         ) {
             Column(modifier = Modifier.padding(20.dp)) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Icon(
-                        imageVector = Icons.Default.FlashOn,
-                        contentDescription = null,
-                        tint = GuardGreen
-                    )
-                    Spacer(modifier = Modifier.width(10.dp))
-                    Text(
-                        text = "Method 1: Shizuku (Recommended, No PC)",
-                        style = MaterialTheme.typography.titleLarge,
-                        color = TextPrimary,
-                        fontWeight = FontWeight.Bold
-                    )
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween
+                ) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        modifier = Modifier.weight(1f)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.FlashOn,
+                            contentDescription = null,
+                            tint = GuardGreen
+                        )
+                        Spacer(modifier = Modifier.width(10.dp))
+                        Text(
+                            text = "Method 1: Shizuku (No PC)",
+                            style = MaterialTheme.typography.titleLarge,
+                            color = TextPrimary,
+                            fontWeight = FontWeight.Bold
+                        )
+                    }
+
+                    IconButton(
+                        onClick = {
+                            ShizukuManager.checkAndUpdate()
+                            repository.refreshState()
+                            Toast.makeText(context, "Checked Shizuku status", Toast.LENGTH_SHORT).show()
+                        }
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Refresh,
+                            contentDescription = "Refresh",
+                            tint = TextSecondary
+                        )
+                    }
                 }
 
                 Spacer(modifier = Modifier.height(8.dp))
                 Text(
-                    text = "If you have the open-source Shizuku app installed on your phone, you can grant the permission instantly with a single tap.",
+                    text = "If you have started Shizuku via Wireless Debugging, you can grant the required WRITE_SECURE_SETTINGS permission directly on your phone.",
                     style = MaterialTheme.typography.bodyMedium,
                     color = TextSecondary
                 )
@@ -189,65 +223,175 @@ fun SetupWizardScreen(
                         .padding(12.dp),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    val shizukuRunning = ShizukuManager.isShizukuRunning()
                     Box(
                         modifier = Modifier
                             .size(10.dp)
                             .clip(RoundedCornerShape(5.dp))
-                            .background(if (shizukuRunning) GuardGreen else GuardAmber)
+                            .background(
+                                when {
+                                    state.hasSecureSettingsPermission -> GuardGreen
+                                    isShizukuRunning && isShizukuAuthorized -> GuardGreen
+                                    isShizukuRunning -> GuardAmber
+                                    else -> GuardAmber
+                                }
+                            )
                     )
                     Spacer(modifier = Modifier.width(10.dp))
-                    Text(
-                        text = if (shizukuRunning) "Shizuku service is running" else "Shizuku service is not running",
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = if (shizukuRunning) GuardGreen else GuardAmber,
-                        fontWeight = FontWeight.Medium
-                    )
+                    Column {
+                        Text(
+                            text = when {
+                                state.hasSecureSettingsPermission -> "Secure settings permission already granted!"
+                                !isShizukuRunning -> "Shizuku service is not running"
+                                !isShizukuAuthorized -> "Shizuku connected • Authorization needed"
+                                else -> "Shizuku connected & authorized"
+                            },
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = when {
+                                state.hasSecureSettingsPermission -> GuardGreen
+                                isShizukuRunning && isShizukuAuthorized -> GuardGreen
+                                else -> GuardAmber
+                            },
+                            fontWeight = FontWeight.Medium
+                        )
+                        if (!state.hasSecureSettingsPermission && !isShizukuRunning) {
+                            Text(
+                                text = "Start Shizuku via Wireless Debugging first, then tap Refresh",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = TextSecondary
+                            )
+                        }
+                    }
                 }
 
                 Spacer(modifier = Modifier.height(14.dp))
 
-                Button(
-                    onClick = {
-                        if (!ShizukuManager.isShizukuRunning()) {
-                            Toast.makeText(context, "Please start the Shizuku app first.", Toast.LENGTH_LONG).show()
-                            return@Button
-                        }
-                        if (!ShizukuManager.hasShizukuPermission()) {
-                            ShizukuManager.requestShizukuPermission()
-                            return@Button
-                        }
-
-                        isGrantingViaShizuku = true
-                        coroutineScope.launch {
-                            val result = ShizukuManager.grantWriteSecureSettings(context.packageName)
-                            isGrantingViaShizuku = false
-                            if (result.isSuccess) {
-                                repository.refreshState()
-                                Toast.makeText(context, "Permission successfully granted!", Toast.LENGTH_SHORT).show()
-                            } else {
-                                Toast.makeText(context, "Error: ${result.exceptionOrNull()?.message}", Toast.LENGTH_LONG).show()
-                            }
-                        }
-                    },
-                    modifier = Modifier.fillMaxWidth(),
-                    enabled = !isGrantingViaShizuku,
-                    colors = ButtonDefaults.buttonColors(containerColor = GuardGreen),
-                    shape = RoundedCornerShape(12.dp)
-                ) {
-                    if (isGrantingViaShizuku) {
-                        CircularProgressIndicator(
-                            modifier = Modifier.size(18.dp),
-                            color = DarkSurface,
-                            strokeWidth = 2.dp
+                if (state.hasSecureSettingsPermission) {
+                    OutlinedButton(
+                        onClick = {},
+                        enabled = false,
+                        modifier = Modifier.fillMaxWidth(),
+                        shape = RoundedCornerShape(12.dp),
+                        border = BorderStroke(1.dp, GuardGreen.copy(alpha = 0.5f))
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.CheckCircle,
+                            contentDescription = null,
+                            tint = GuardGreen,
+                            modifier = Modifier.size(18.dp)
                         )
                         Spacer(modifier = Modifier.width(8.dp))
+                        Text(
+                            text = "Permission Granted & Active",
+                            color = GuardGreen,
+                            fontWeight = FontWeight.Bold
+                        )
                     }
-                    Text(
-                        text = "Grant Permission via Shizuku",
-                        color = DarkSurface,
-                        fontWeight = FontWeight.Bold
-                    )
+                } else if (!isShizukuRunning) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(10.dp)
+                    ) {
+                        OutlinedButton(
+                            onClick = {
+                                val launchIntent = context.packageManager.getLaunchIntentForPackage("moe.shizuku.privileged.api")
+                                if (launchIntent != null) {
+                                    context.startActivity(launchIntent)
+                                } else {
+                                    try {
+                                        val marketIntent = Intent(Intent.ACTION_VIEW, Uri.parse("https://shizuku.rikka.app/download/"))
+                                        context.startActivity(marketIntent)
+                                    } catch (_: Exception) {
+                                        Toast.makeText(context, "Shizuku is not installed.", Toast.LENGTH_SHORT).show()
+                                    }
+                                }
+                            },
+                            modifier = Modifier.weight(1f),
+                            shape = RoundedCornerShape(12.dp),
+                            border = BorderStroke(1.dp, DarkBorder),
+                            colors = ButtonDefaults.outlinedButtonColors(contentColor = TextPrimary)
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.OpenInNew,
+                                contentDescription = null,
+                                modifier = Modifier.size(16.dp)
+                            )
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Text(text = "Open Shizuku", fontSize = 13.sp)
+                        }
+
+                        Button(
+                            onClick = {
+                                ShizukuManager.checkAndUpdate()
+                                repository.refreshState()
+                                Toast.makeText(
+                                    context,
+                                    if (ShizukuManager.isShizukuRunning()) "Connected to Shizuku!" else "Still not detected. Ensure Shizuku is running.",
+                                    Toast.LENGTH_SHORT
+                                ).show()
+                            },
+                            modifier = Modifier.weight(1f),
+                            shape = RoundedCornerShape(12.dp),
+                            colors = ButtonDefaults.buttonColors(containerColor = GuardBlue)
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.Refresh,
+                                contentDescription = null,
+                                modifier = Modifier.size(16.dp),
+                                tint = DarkSurface
+                            )
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Text(text = "Re-check", color = DarkSurface, fontWeight = FontWeight.Bold, fontSize = 13.sp)
+                        }
+                    }
+                } else if (!isShizukuAuthorized) {
+                    Button(
+                        onClick = {
+                            ShizukuManager.requestShizukuPermission()
+                        },
+                        modifier = Modifier.fillMaxWidth(),
+                        shape = RoundedCornerShape(12.dp),
+                        colors = ButtonDefaults.buttonColors(containerColor = GuardAmber)
+                    ) {
+                        Text(
+                            text = "Authorize PrivateDNS Guard in Shizuku",
+                            color = DarkSurface,
+                            fontWeight = FontWeight.Bold
+                        )
+                    }
+                } else {
+                    Button(
+                        onClick = {
+                            isGrantingViaShizuku = true
+                            coroutineScope.launch {
+                                val result = ShizukuManager.grantWriteSecureSettings(context.packageName)
+                                isGrantingViaShizuku = false
+                                if (result.isSuccess) {
+                                    repository.refreshState()
+                                    Toast.makeText(context, "Permission successfully granted!", Toast.LENGTH_SHORT).show()
+                                } else {
+                                    Toast.makeText(context, "Error: ${result.exceptionOrNull()?.message}", Toast.LENGTH_LONG).show()
+                                }
+                            }
+                        },
+                        modifier = Modifier.fillMaxWidth(),
+                        enabled = !isGrantingViaShizuku,
+                        colors = ButtonDefaults.buttonColors(containerColor = GuardGreen),
+                        shape = RoundedCornerShape(12.dp)
+                    ) {
+                        if (isGrantingViaShizuku) {
+                            CircularProgressIndicator(
+                                modifier = Modifier.size(18.dp),
+                                color = DarkSurface,
+                                strokeWidth = 2.dp
+                            )
+                            Spacer(modifier = Modifier.width(8.dp))
+                        }
+                        Text(
+                            text = "Grant System Permission (1-Tap)",
+                            color = DarkSurface,
+                            fontWeight = FontWeight.Bold
+                        )
+                    }
                 }
             }
         }
