@@ -1,0 +1,5 @@
+<resources>
+    <string name="app_name">PrivateDNS Guard</string>
+    <string name="device_admin_label">PrivateDNS Guard Protection</string>
+    <string name="device_admin_description">Prevents unauthorized uninstallation of PrivateDNS Guard to keep your DNS settings securely locked.</string>
+</resources>
