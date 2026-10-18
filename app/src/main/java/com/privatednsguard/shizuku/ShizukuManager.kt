@@ -58,10 +58,15 @@ object ShizukuManager {
         if (!hasShizukuPermission()) {
             return@withContext Result.failure(IllegalStateException("PrivateDNS Guard does not have Shizuku permission yet."))
         }
-
         try {
             val cmd = "pm grant $packageName android.permission.WRITE_SECURE_SETTINGS"
-            val process = Shizuku.newProcess(arrayOf("sh", "-c", cmd), null, null)
+            val newProcessMethod = Shizuku::class.java.getDeclaredMethod(
+                "newProcess",
+                Array<String>::class.java,
+                Array<String>::class.java,
+                String::class.java
+            ).apply { isAccessible = true }
+            val process = newProcessMethod.invoke(null, arrayOf("sh", "-c", cmd), null, null) as java.lang.Process
             val output = BufferedReader(InputStreamReader(process.inputStream)).use { it.readText() }
             val error = BufferedReader(InputStreamReader(process.errorStream)).use { it.readText() }
             val exitCode = process.waitFor()

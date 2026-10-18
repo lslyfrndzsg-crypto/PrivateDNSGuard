@@ -22,6 +22,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.unit.dp
 import com.privatednsguard.data.repository.DnsGuardRepository
 import com.privatednsguard.data.security.SecurityManager
 import com.privatednsguard.service.PrivateDnsWatchdogService
@@ -59,7 +60,7 @@ fun MainScreen(
             if (!isSetupWizardOpen) {
                 NavigationBar(
                     containerColor = DarkSurface,
-                    tonalElevation = androidx.compose.ui.unit.dp
+                    tonalElevation = 3.dp
                 ) {
                     NavTab.entries.forEach { tab ->
                         val selected = (selectedTab == tab)
