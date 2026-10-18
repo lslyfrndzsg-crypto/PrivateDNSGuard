@@ -33,6 +33,8 @@ class MainActivity : FragmentActivity() {
         repository = DnsGuardRepository.getInstance(this)
         securityManager = SecurityManager(this)
 
+        requestEssentialPermissions()
+
         setContent {
             PrivateDNSGuardTheme {
                 var isAppUnlocked by remember {
@@ -65,10 +67,21 @@ class MainActivity : FragmentActivity() {
         }
     }
 
+    private fun requestEssentialPermissions() {
+        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.TIRAMISU) {
+            if (checkSelfPermission(android.Manifest.permission.POST_NOTIFICATIONS) != android.content.pm.PackageManager.PERMISSION_GRANTED) {
+                requestPermissions(arrayOf(android.Manifest.permission.POST_NOTIFICATIONS), 1002)
+            }
+        }
+    }
+
     override fun onResume() {
         super.onResume()
         repository.refreshState()
         com.privatednsguard.shizuku.ShizukuManager.checkAndUpdate()
+        if (repository.policyState.value.isGuardEnabled && repository.hasSecureSettingsPermission()) {
+            com.privatednsguard.service.PrivateDnsWatchdogService.start(this)
+        }
     }
 
     private fun triggerBiometricPrompt(onSuccess: () -> Unit) {

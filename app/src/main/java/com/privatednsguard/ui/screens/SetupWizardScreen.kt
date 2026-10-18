@@ -366,8 +366,11 @@ fun SetupWizardScreen(
                                 val result = ShizukuManager.grantWriteSecureSettings(context.packageName)
                                 isGrantingViaShizuku = false
                                 if (result.isSuccess) {
+                                    repository.adoptCurrentSystemDns()
+                                    repository.setGuardEnabled(true)
+                                    com.privatednsguard.service.PrivateDnsWatchdogService.start(context)
                                     repository.refreshState()
-                                    Toast.makeText(context, "Permission successfully granted!", Toast.LENGTH_SHORT).show()
+                                    Toast.makeText(context, "Permission granted! Guard activated & locking DNS.", Toast.LENGTH_SHORT).show()
                                 } else {
                                     Toast.makeText(context, "Error: ${result.exceptionOrNull()?.message}", Toast.LENGTH_LONG).show()
                                 }

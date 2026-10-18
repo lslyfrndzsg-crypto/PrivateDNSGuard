@@ -114,6 +114,8 @@ fun MainScreen(
                             },
                             onAdoptCurrentSystemDns = {
                                 repository.adoptCurrentSystemDns()
+                                repository.setGuardEnabled(true)
+                                PrivateDnsWatchdogService.start(context)
                             },
                             onSnoozeSelected = { minutes ->
                                 repository.snoozeProtection(minutes)

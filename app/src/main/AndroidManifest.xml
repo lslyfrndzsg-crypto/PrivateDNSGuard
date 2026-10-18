@@ -10,7 +10,6 @@
     <!-- Foreground service permissions for the continuous watchdog -->
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
-    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SYSTEM_EXEMPTED" />
 
     <!-- Notifications for tamper alerts and watchdog status -->
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
@@ -60,7 +59,7 @@
             android:name=".service.PrivateDnsWatchdogService"
             android:enabled="true"
             android:exported="false"
-            android:foregroundServiceType="specialUse|systemExempted">
+            android:foregroundServiceType="specialUse">
             <property
                 android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
                 android:value="Monitors and locks Android Private DNS settings to prevent unauthorized tampering." />

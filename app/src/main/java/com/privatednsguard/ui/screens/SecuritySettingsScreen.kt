@@ -545,7 +545,7 @@ fun CreatePinDialog(
                 OutlinedTextField(
                     value = pin,
                     onValueChange = { if (it.length <= 6 && it.all { c -> c.isDigit() }) pin = it },
-                    label = { Text("4-digit PIN") },
+                    label = { Text("6-digit PIN") },
                     modifier = Modifier.fillMaxWidth(),
                     singleLine = true,
                     colors = TextFieldDefaults.colors(
@@ -589,8 +589,8 @@ fun CreatePinDialog(
                     Spacer(modifier = Modifier.width(8.dp))
                     Button(
                         onClick = {
-                            if (pin.length < 4) {
-                                error = "PIN must be at least 4 digits."
+                            if (pin.length != 6) {
+                                error = "PIN must be exactly 6 digits."
                             } else if (pin != confirmPin) {
                                 error = "PINs do not match."
                             } else {

@@ -90,16 +90,16 @@ fun PinAuthDialog(
 
                 Spacer(modifier = Modifier.height(20.dp))
 
-                // PIN dots indicator
+                // PIN dots indicator (6 digits)
                 Row(
-                    horizontalArrangement = Arrangement.spacedBy(16.dp),
+                    horizontalArrangement = Arrangement.spacedBy(12.dp),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    repeat(4) { index ->
+                    repeat(6) { index ->
                         val filled = index < pin.length
                         Box(
                             modifier = Modifier
-                                .size(16.dp)
+                                .size(14.dp)
                                 .clip(CircleShape)
                                 .background(if (filled) GuardGreen else DarkSurfaceElevated)
                         )
@@ -176,12 +176,12 @@ fun PinAuthDialog(
                                             .clip(CircleShape)
                                             .background(DarkSurfaceElevated)
                                             .clickable {
-                                                if (pin.length < 4) {
+                                                if (pin.length < 6) {
                                                     val newPin = pin + key
                                                     pin = newPin
                                                     errorMessage = null
 
-                                                    if (newPin.length == 4) {
+                                                    if (newPin.length == 6) {
                                                         when (val result = securityManager.verifyPin(newPin)) {
                                                             is PinVerificationResult.Success -> {
                                                                 onSuccess()

@@ -71,6 +71,8 @@ class PrivateDnsWatchdogService : Service() {
         }
     }
 
+    private var watchdogPollingJob: Job? = null
+
     override fun onCreate() {
         super.onCreate()
         repository = DnsGuardRepository.getInstance(this)
@@ -78,8 +80,20 @@ class PrivateDnsWatchdogService : Service() {
         notificationManager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
 
         createNotificationChannels()
-        startForeground(NOTIFICATION_STATUS_ID, buildStatusNotification())
+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            androidx.core.app.ServiceCompat.startForeground(
+                this,
+                NOTIFICATION_STATUS_ID,
+                buildStatusNotification(),
+                android.content.pm.ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE
+            )
+        } else {
+            startForeground(NOTIFICATION_STATUS_ID, buildStatusNotification())
+        }
+
         registerDnsObserver()
+        startContinuousWatchdog()
         startSnoozeMonitoring()
     }
 
@@ -106,6 +120,11 @@ class PrivateDnsWatchdogService : Service() {
 
         val handler = Handler(Looper.getMainLooper())
         dnsObserver = object : ContentObserver(handler) {
+            override fun onChange(selfChange: Boolean) {
+                super.onChange(selfChange)
+                checkAndEnforcePolicy()
+            }
+
             override fun onChange(selfChange: Boolean, uri: Uri?) {
                 super.onChange(selfChange, uri)
                 checkAndEnforcePolicy()
@@ -115,8 +134,24 @@ class PrivateDnsWatchdogService : Service() {
         val modeUri = Settings.Global.getUriFor(DnsGuardRepository.SETTINGS_PRIVATE_DNS_MODE)
         val specifierUri = Settings.Global.getUriFor(DnsGuardRepository.SETTINGS_PRIVATE_DNS_SPECIFIER)
 
-        contentResolver.registerContentObserver(modeUri, false, dnsObserver!!)
-        contentResolver.registerContentObserver(specifierUri, false, dnsObserver!!)
+        try {
+            contentResolver.registerContentObserver(modeUri, true, dnsObserver!!)
+            contentResolver.registerContentObserver(specifierUri, true, dnsObserver!!)
+        } catch (_: Throwable) {
+        }
+    }
+
+    private fun startContinuousWatchdog() {
+        watchdogPollingJob?.cancel()
+        watchdogPollingJob = serviceScope.launch(Dispatchers.IO) {
+            while (isActive) {
+                try {
+                    checkAndEnforcePolicy()
+                } catch (_: Throwable) {
+                }
+                delay(1000) // 1-second active heartbeat ensures auto-revert even if observer is throttled
+            }
+        }
     }
 
     private fun checkAndEnforcePolicy() {
@@ -125,7 +160,6 @@ class PrivateDnsWatchdogService : Service() {
 
         // If protection is disabled or currently snoozed, do not revert
         if (!state.isGuardEnabled || repository.isSnoozed()) {
-            notificationManager.notify(NOTIFICATION_STATUS_ID, buildStatusNotification())
             return
         }
 
@@ -147,11 +181,10 @@ class PrivateDnsWatchdogService : Service() {
                         attempted = if (activeMode == DnsMode.HOSTNAME) activeSpecifier else activeMode.displayName,
                         restored = if (state.targetMode == DnsMode.HOSTNAME) state.targetSpecifier else state.targetMode.displayName
                     )
+                    notificationManager.notify(NOTIFICATION_STATUS_ID, buildStatusNotification())
                 }
             }
         }
-
-        notificationManager.notify(NOTIFICATION_STATUS_ID, buildStatusNotification())
     }
 
     private fun startSnoozeMonitoring() {
