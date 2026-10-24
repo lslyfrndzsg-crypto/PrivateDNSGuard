@@ -254,7 +254,8 @@ class DnsGuardRepository(private val context: Context) {
     }
 
     fun snoozeProtection(durationMinutes: Int) {
-        val until = System.currentTimeMillis() + (durationMinutes * 60 * 1000L)
+        val clamped = durationMinutes.coerceIn(1, 30)
+        val until = System.currentTimeMillis() + (clamped * 60 * 1000L)
         prefs.edit().putLong(KEY_SNOOZE_UNTIL, until).apply()
         refreshState()
     }

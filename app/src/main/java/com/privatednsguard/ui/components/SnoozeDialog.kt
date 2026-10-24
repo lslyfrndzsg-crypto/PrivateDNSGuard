@@ -36,9 +36,8 @@ fun SnoozeDialog(
 ) {
     val durations = listOf(
         Pair(10, "10 Minutes (Quick Wi-Fi / Hotel Login)"),
-        Pair(30, "30 Minutes"),
-        Pair(60, "1 Hour"),
-        Pair(120, "2 Hours")
+        Pair(15, "15 Minutes"),
+        Pair(30, "30 Minutes (Maximum)")
     )
 
     Dialog(onDismissRequest = onDismiss) {
