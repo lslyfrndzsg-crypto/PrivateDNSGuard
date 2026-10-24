@@ -22,8 +22,9 @@ class DnsHealthWorker(
 
         val state = repository.policyState.value
         if (state.isGuardEnabled && !repository.isSnoozed()) {
-            // Ensure service is running
+            // Ensure service and periodic alarm are active
             PrivateDnsWatchdogService.start(applicationContext)
+            com.privatednsguard.receiver.WatchdogRestartReceiver.schedulePeriodicAlarm(applicationContext)
 
             // Verify system settings match policy
             val activeMode = repository.readActiveSystemMode()

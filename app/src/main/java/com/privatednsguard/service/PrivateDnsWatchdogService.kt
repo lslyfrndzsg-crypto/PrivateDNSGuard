@@ -5,8 +5,10 @@ import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.PendingIntent
 import android.app.Service
+import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
+import android.content.IntentFilter
 import android.database.ContentObserver
 import android.net.Uri
 import android.os.Build
@@ -14,6 +16,7 @@ import android.os.Handler
 import android.os.IBinder
 import android.os.Looper
 import android.provider.Settings
+import android.util.Log
 import androidx.core.app.NotificationCompat
 import androidx.core.content.ContextCompat
 import com.privatednsguard.MainActivity
@@ -21,12 +24,18 @@ import com.privatednsguard.R
 import com.privatednsguard.data.model.DnsMode
 import com.privatednsguard.data.repository.DnsGuardRepository
 import com.privatednsguard.data.security.SecurityManager
+import com.privatednsguard.receiver.WatchdogRestartReceiver
+import kotlinx.coroutines.CoroutineExceptionHandler
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.withContext
 
 class PrivateDnsWatchdogService : Service() {
 
@@ -35,11 +44,33 @@ class PrivateDnsWatchdogService : Service() {
     private lateinit var notificationManager: NotificationManager
     private var dnsObserver: ContentObserver? = null
 
-    private val serviceJob = Job()
-    private val serviceScope = CoroutineScope(Dispatchers.Main + serviceJob)
+    // SupervisorJob ensures failures in child coroutines do not kill the root scope
+    private val serviceJob = SupervisorJob()
+    private val exceptionHandler = CoroutineExceptionHandler { _, throwable ->
+        Log.e(TAG, "Watchdog coroutine error caught: ${throwable.message}", throwable)
+    }
+    private val serviceScope = CoroutineScope(Dispatchers.Main + serviceJob + exceptionHandler)
+
+    private val enforcementMutex = Mutex()
+    private var debounceJob: Job? = null
+    private var watchdogPollingJob: Job? = null
     private var snoozeTickerJob: Job? = null
 
+    private val screenReceiver = object : BroadcastReceiver() {
+        override fun onReceive(context: Context?, intent: Intent?) {
+            when (intent?.action) {
+                Intent.ACTION_SCREEN_ON,
+                Intent.ACTION_USER_PRESENT -> {
+                    // Check instantly when user turns phone on or unlocks (prime time for tampering)
+                    schedulePolicyCheck(debounceMs = 0L)
+                }
+            }
+        }
+    }
+
     companion object {
+        private const val TAG = "PrivateDnsWatchdog"
+
         const val CHANNEL_STATUS_ID = "dns_guard_watchdog_status"
         const val CHANNEL_ALERT_ID = "dns_guard_tamper_alert"
         const val NOTIFICATION_STATUS_ID = 2001
@@ -50,31 +81,45 @@ class PrivateDnsWatchdogService : Service() {
         const val ACTION_UPDATE = "com.privatednsguard.action.UPDATE"
 
         fun start(context: Context) {
-            val intent = Intent(context, PrivateDnsWatchdogService::class.java).apply {
-                action = ACTION_START
+            try {
+                val intent = Intent(context, PrivateDnsWatchdogService::class.java).apply {
+                    action = ACTION_START
+                }
+                ContextCompat.startForegroundService(context, intent)
+                WatchdogRestartReceiver.schedulePeriodicAlarm(context)
+            } catch (e: Throwable) {
+                Log.w(TAG, "Failed startForegroundService (Android 12+ background limit): ${e.message}")
+                WatchdogRestartReceiver.scheduleImmediateRestart(context, delayMs = 1500L)
             }
-            ContextCompat.startForegroundService(context, intent)
         }
 
         fun stop(context: Context) {
-            val intent = Intent(context, PrivateDnsWatchdogService::class.java).apply {
-                action = ACTION_STOP
+            try {
+                val intent = Intent(context, PrivateDnsWatchdogService::class.java).apply {
+                    action = ACTION_STOP
+                }
+                context.startService(intent)
+                WatchdogRestartReceiver.cancelPeriodicAlarm(context)
+            } catch (e: Throwable) {
+                Log.w(TAG, "Failed stopService: ${e.message}")
             }
-            context.startService(intent)
         }
 
         fun update(context: Context) {
-            val intent = Intent(context, PrivateDnsWatchdogService::class.java).apply {
-                action = ACTION_UPDATE
+            try {
+                val intent = Intent(context, PrivateDnsWatchdogService::class.java).apply {
+                    action = ACTION_UPDATE
+                }
+                context.startService(intent)
+            } catch (e: Throwable) {
+                Log.w(TAG, "Failed updateService: ${e.message}")
             }
-            context.startService(intent)
         }
     }
 
-    private var watchdogPollingJob: Job? = null
-
     override fun onCreate() {
         super.onCreate()
+        Log.i(TAG, "PrivateDnsWatchdogService onCreate")
         repository = DnsGuardRepository.getInstance(this)
         securityManager = SecurityManager(this)
         notificationManager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
@@ -93,8 +138,11 @@ class PrivateDnsWatchdogService : Service() {
         }
 
         registerDnsObserver()
+        registerScreenStateReceiver()
         startContinuousWatchdog()
         startSnoozeMonitoring()
+
+        WatchdogRestartReceiver.schedulePeriodicAlarm(this)
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -105,14 +153,35 @@ class PrivateDnsWatchdogService : Service() {
             }
             ACTION_UPDATE -> {
                 notificationManager.notify(NOTIFICATION_STATUS_ID, buildStatusNotification())
-                checkAndEnforcePolicy()
+                schedulePolicyCheck(debounceMs = 0L)
             }
             else -> {
                 notificationManager.notify(NOTIFICATION_STATUS_ID, buildStatusNotification())
-                checkAndEnforcePolicy()
+                schedulePolicyCheck(debounceMs = 0L)
             }
         }
         return START_STICKY
+    }
+
+    override fun onTaskRemoved(rootIntent: Intent?) {
+        super.onTaskRemoved(rootIntent)
+        val state = repository.policyState.value
+        if (state.isGuardEnabled) {
+            Log.i(TAG, "User swiped app from Recents. Scheduling immediate watchdog restart.")
+            WatchdogRestartReceiver.scheduleImmediateRestart(this, delayMs = 1000L)
+        }
+    }
+
+    private fun registerScreenStateReceiver() {
+        val filter = IntentFilter().apply {
+            addAction(Intent.ACTION_SCREEN_ON)
+            addAction(Intent.ACTION_USER_PRESENT)
+        }
+        try {
+            registerReceiver(screenReceiver, filter)
+        } catch (e: Throwable) {
+            Log.w(TAG, "Could not register screenReceiver: ${e.message}")
+        }
     }
 
     private fun registerDnsObserver() {
@@ -120,14 +189,9 @@ class PrivateDnsWatchdogService : Service() {
 
         val handler = Handler(Looper.getMainLooper())
         dnsObserver = object : ContentObserver(handler) {
-            override fun onChange(selfChange: Boolean) {
-                super.onChange(selfChange)
-                checkAndEnforcePolicy()
-            }
-
             override fun onChange(selfChange: Boolean, uri: Uri?) {
-                super.onChange(selfChange, uri)
-                checkAndEnforcePolicy()
+                // Debounce rapid changes to prevent duplicate parallel executions
+                schedulePolicyCheck(debounceMs = 200L)
             }
         }
 
@@ -137,7 +201,19 @@ class PrivateDnsWatchdogService : Service() {
         try {
             contentResolver.registerContentObserver(modeUri, true, dnsObserver!!)
             contentResolver.registerContentObserver(specifierUri, true, dnsObserver!!)
-        } catch (_: Throwable) {
+            Log.d(TAG, "DnsObserver successfully registered on Settings.Global URIs")
+        } catch (e: Throwable) {
+            Log.e(TAG, "Failed to register content observer: ${e.message}", e)
+        }
+    }
+
+    private fun schedulePolicyCheck(debounceMs: Long = 200L) {
+        debounceJob?.cancel()
+        debounceJob = serviceScope.launch {
+            if (debounceMs > 0) {
+                delay(debounceMs)
+            }
+            checkAndEnforcePolicy()
         }
     }
 
@@ -147,41 +223,46 @@ class PrivateDnsWatchdogService : Service() {
             while (isActive) {
                 try {
                     checkAndEnforcePolicy()
-                } catch (_: Throwable) {
+                } catch (e: Throwable) {
+                    Log.e(TAG, "Watchdog heartbeat loop error: ${e.message}", e)
                 }
-                delay(1000) // 1-second active heartbeat ensures auto-revert even if observer is throttled
+                // 15-second heartbeat: zero battery impact, doesn't trip OS background killers,
+                // while ContentObserver and ScreenOnReceiver provide instant 0ms response.
+                delay(15000L)
             }
         }
     }
 
-    private fun checkAndEnforcePolicy() {
-        repository.refreshState()
-        val state = repository.policyState.value
+    private suspend fun checkAndEnforcePolicy() = withContext(Dispatchers.IO) {
+        enforcementMutex.withLock {
+            val state = repository.policyState.value
 
-        // If protection is disabled or currently snoozed, do not revert
-        if (!state.isGuardEnabled || repository.isSnoozed()) {
-            return
-        }
+            // If protection is disabled or currently snoozed, do not revert
+            if (!state.isGuardEnabled || repository.isSnoozed()) {
+                return@withLock
+            }
 
-        val activeMode = repository.readActiveSystemMode()
-        val activeSpecifier = repository.readActiveSystemSpecifier()
+            val activeMode = repository.readActiveSystemMode()
+            val activeSpecifier = repository.readActiveSystemSpecifier()
 
-        val isTargetMismatch = (activeMode != state.targetMode) ||
-                (state.targetMode == DnsMode.HOSTNAME && !activeSpecifier.equals(state.targetSpecifier, ignoreCase = true))
+            val isTargetMismatch = (activeMode != state.targetMode) ||
+                    (state.targetMode == DnsMode.HOSTNAME && !activeSpecifier.equals(state.targetSpecifier, ignoreCase = true))
 
-        if (isTargetMismatch) {
-            // Unauthorized change detected! Immediately revert back!
-            serviceScope.launch(Dispatchers.IO) {
+            if (isTargetMismatch) {
+                Log.w(TAG, "Unauthorized DNS mismatch detected! Active: mode=${activeMode.systemValue}, specifier=$activeSpecifier; Target: mode=${state.targetMode.systemValue}, specifier=${state.targetSpecifier}")
                 val reverted = repository.revertToTargetPolicy(
                     attemptedMode = activeMode.systemValue,
                     attemptedSpecifier = activeSpecifier
                 )
                 if (reverted) {
+                    Log.i(TAG, "Successfully restored DNS target policy.")
                     showTamperAlertNotification(
                         attempted = if (activeMode == DnsMode.HOSTNAME) activeSpecifier else activeMode.displayName,
                         restored = if (state.targetMode == DnsMode.HOSTNAME) state.targetSpecifier else state.targetMode.displayName
                     )
                     notificationManager.notify(NOTIFICATION_STATUS_ID, buildStatusNotification())
+                } else {
+                    Log.e(TAG, "Failed to revert DNS setting. Verify WRITE_SECURE_SETTINGS permission.")
                 }
             }
         }
@@ -191,7 +272,7 @@ class PrivateDnsWatchdogService : Service() {
         snoozeTickerJob?.cancel()
         snoozeTickerJob = serviceScope.launch {
             while (isActive) {
-                delay(5000)
+                delay(5000L)
                 if (repository.isSnoozed()) {
                     repository.refreshState()
                     notificationManager.notify(NOTIFICATION_STATUS_ID, buildStatusNotification())
@@ -310,8 +391,17 @@ class PrivateDnsWatchdogService : Service() {
     }
 
     override fun onDestroy() {
+        Log.i(TAG, "PrivateDnsWatchdogService onDestroy")
+        try {
+            unregisterReceiver(screenReceiver)
+        } catch (_: Throwable) {
+        }
+
         dnsObserver?.let {
-            contentResolver.unregisterContentObserver(it)
+            try {
+                contentResolver.unregisterContentObserver(it)
+            } catch (_: Throwable) {
+            }
             dnsObserver = null
         }
         serviceJob.cancel()

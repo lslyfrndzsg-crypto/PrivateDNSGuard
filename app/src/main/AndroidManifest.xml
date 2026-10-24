@@ -24,6 +24,9 @@
     <!-- Battery optimization exemption request to survive aggressive OEM killers -->
     <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
 
+    <!-- Wake lock to guarantee immediate revert execution even when screen is off -->
+    <uses-permission android:name="android.permission.WAKE_LOCK" />
+
     <!-- Required on Android 11+ to query and connect to Shizuku Manager -->
     <queries>
         <package android:name="moe.shizuku.privileged.api" />
@@ -77,6 +80,17 @@
                 <action android:name="android.intent.action.MY_PACKAGE_REPLACED" />
                 <action android:name="android.intent.action.QUICKBOOT_POWERON" />
                 <action android:name="com.htc.intent.action.QUICKBOOT_POWERON" />
+            </intent-filter>
+        </receiver>
+
+        <!-- Watchdog Self-Healing & Alarm Restart Receiver -->
+        <receiver
+            android:name=".receiver.WatchdogRestartReceiver"
+            android:enabled="true"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="com.privatednsguard.action.RESTART_WATCHDOG" />
+                <action android:name="com.privatednsguard.action.HEARTBEAT_ALARM" />
             </intent-filter>
         </receiver>
 

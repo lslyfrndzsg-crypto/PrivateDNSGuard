@@ -102,6 +102,7 @@ data class DnsPolicyState(
     val isShizukuAvailable: Boolean = false,
     val isShizukuGranted: Boolean = false,
     val isDeviceAdminActive: Boolean = false,
+    val isBatteryOptimizationIgnored: Boolean = false,
     val snoozeRemainingSeconds: Long = 0L,
     val blockedTamperCount: Int = 0
 ) {

@@ -23,6 +23,7 @@ class BootReceiver : BroadcastReceiver() {
                 if (repository.policyState.value.isGuardEnabled) {
                     // Start the watchdog service to resume monitoring & auto-revert
                     PrivateDnsWatchdogService.start(context)
+                    WatchdogRestartReceiver.schedulePeriodicAlarm(context)
                 }
             }
         }

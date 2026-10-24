@@ -6,6 +6,7 @@ import android.content.ComponentName
 import android.content.Context
 import android.content.SharedPreferences
 import android.content.pm.PackageManager
+import android.os.PowerManager
 import android.provider.Settings
 import com.privatednsguard.data.db.AppDatabase
 import com.privatednsguard.data.db.TamperEvent
@@ -21,6 +22,8 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 
 class DnsGuardRepository(private val context: Context) {
@@ -30,6 +33,7 @@ class DnsGuardRepository(private val context: Context) {
     private val database = AppDatabase.getInstance(context)
     private val tamperDao = database.tamperDao()
     private val scope = CoroutineScope(Dispatchers.IO)
+    private val revertMutex = Mutex()
 
     private val _policyState = MutableStateFlow(DnsPolicyState())
     val policyState: StateFlow<DnsPolicyState> = _policyState.asStateFlow()
@@ -115,6 +119,9 @@ class DnsGuardRepository(private val context: Context) {
         val now = System.currentTimeMillis()
         val remainingSnoozeSeconds = if (snoozeUntil > now) (snoozeUntil - now) / 1000 else 0L
 
+        val powerManager = context.getSystemService(Context.POWER_SERVICE) as? PowerManager
+        val isBatteryOptimizationIgnored = powerManager?.isIgnoringBatteryOptimizations(context.packageName) ?: false
+
         _policyState.update {
             it.copy(
                 isGuardEnabled = isGuardEnabled,
@@ -126,6 +133,7 @@ class DnsGuardRepository(private val context: Context) {
                 isShizukuAvailable = isShizukuRunning,
                 isShizukuGranted = isShizukuGranted,
                 isDeviceAdminActive = isDeviceAdmin,
+                isBatteryOptimizationIgnored = isBatteryOptimizationIgnored,
                 snoozeRemainingSeconds = remainingSnoozeSeconds
             )
         }
@@ -199,45 +207,50 @@ class DnsGuardRepository(private val context: Context) {
     ): Boolean = withContext(Dispatchers.IO) {
         if (!hasSecureSettingsPermission()) return@withContext false
 
-        val targetMode = policyState.value.targetMode
-        val targetSpecifier = policyState.value.targetSpecifier
+        revertMutex.withLock {
+            val targetMode = policyState.value.targetMode
+            val targetSpecifier = policyState.value.targetSpecifier
 
-        var success = false
-        try {
-            Settings.Global.putString(
-                context.contentResolver,
-                SETTINGS_PRIVATE_DNS_MODE,
-                targetMode.systemValue
-            )
-            if (targetMode == DnsMode.HOSTNAME) {
+            var success = false
+            try {
                 Settings.Global.putString(
                     context.contentResolver,
-                    SETTINGS_PRIVATE_DNS_SPECIFIER,
-                    targetSpecifier
+                    SETTINGS_PRIVATE_DNS_MODE,
+                    targetMode.systemValue
                 )
+                if (targetMode == DnsMode.HOSTNAME) {
+                    Settings.Global.putString(
+                        context.contentResolver,
+                        SETTINGS_PRIVATE_DNS_SPECIFIER,
+                        targetSpecifier
+                    )
+                }
+                success = true
+            } catch (_: Throwable) {
+                success = false
             }
-            success = true
-        } catch (_: Throwable) {
-            success = false
+
+            // Log the tamper incident to Room DB
+            try {
+                val event = TamperEvent(
+                    attemptedMode = attemptedMode,
+                    attemptedSpecifier = attemptedSpecifier,
+                    revertedMode = targetMode.systemValue,
+                    revertedSpecifier = targetSpecifier,
+                    reverted = success,
+                    message = if (success) {
+                        "Blocked attempt to change DNS. Reverted to ${if (targetMode == DnsMode.HOSTNAME) targetSpecifier else targetMode.displayName}."
+                    } else {
+                        "Detected unauthorized DNS change but failed to write Settings (check permissions)."
+                    }
+                )
+                tamperDao.insertEvent(event)
+            } catch (_: Throwable) {
+            }
+
+            refreshState()
+            success
         }
-
-        // Log the tamper incident to Room DB
-        val event = TamperEvent(
-            attemptedMode = attemptedMode,
-            attemptedSpecifier = attemptedSpecifier,
-            revertedMode = targetMode.systemValue,
-            revertedSpecifier = targetSpecifier,
-            reverted = success,
-            message = if (success) {
-                "Blocked attempt to change DNS. Reverted to ${if (targetMode == DnsMode.HOSTNAME) targetSpecifier else targetMode.displayName}."
-            } else {
-                "Detected unauthorized DNS change but failed to write Settings (check permissions)."
-            }
-        )
-        tamperDao.insertEvent(event)
-
-        refreshState()
-        success
     }
 
     fun snoozeProtection(durationMinutes: Int) {
